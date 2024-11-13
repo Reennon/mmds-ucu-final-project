@@ -9,6 +9,8 @@ readme = "README.md"
 python = "^3.12"
 pyspark = "^3.5.3"
 jupyter = "^1.1.1"
+pybloom-live = "^4.0.0"
+pydantic = "^2.9.2"
 
 
 [build-system]
