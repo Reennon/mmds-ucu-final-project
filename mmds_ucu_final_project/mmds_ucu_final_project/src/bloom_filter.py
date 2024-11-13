@@ -29,19 +29,39 @@ class BotBloomFilter:
         """
         return self.bloom_filter.count
 
+def extract_keywords_from_comment(comment):
+    """
+    Extract keywords or patterns from the edit comment to identify bot-like behavior.
+    """
+    keywords = ["revert", "undo", "fix", "auto", "bot", "updated", "added"]
+    comment_lower = comment.lower()
+    simplified_comment = ' '.join([word for word in keywords if word in comment_lower])
+    return simplified_comment if simplified_comment else 'generic_edit'
 
-def generate_signature(row):
+
+def generate_signature(row, time_interval):
     """
     Generate a signature from specific fields of the edit to comply with the constraint of excluding user information.
     """
     # Extract fields safely
-    timestamp = row['timestamp'] if 'timestamp' in row and row['timestamp'] else ''
-    page_id = str(row['page_id']) if 'page_id' in row and row['page_id'] is not None else ''
+    title = row['title'] if 'title' in row and row['title'] else ''
     comment = row['comment'] if 'comment' in row and row['comment'] else ''
+    edit_size = ''
+    if 'length' in row and 'new' in row['length'] and 'old' in row['length']:
+        edit_size = str(int(row['length']['new']) - int(row['length']['old']))
 
-    # Combine fields into a single string
-    combined = '|'.join([timestamp, page_id, comment])
+    # Extract comment pattern
+    comment_pattern = extract_keywords_from_comment(comment)
+
+    # Combine fields into a single string for hashing
+    combined = '|'.join([
+        str(time_interval) if time_interval is not None else '',
+        comment_pattern,
+        title,
+        edit_size
+    ])
 
     # Create a hash of the combined string
     signature = hashlib.sha256(combined.encode('utf-8')).hexdigest()
     return signature
+
