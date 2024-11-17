@@ -1,10 +1,11 @@
-# spark_streaming.py
-
+import csv
+import os
 from pyspark import SparkContext, SparkConf
 from pyspark.streaming import StreamingContext
 import threading
 import time
 import json
+from datetime import datetime
 
 from mmds_ucu_final_project.src.bloom_filter import BotBloomFilter, generate_signature
 from mmds_ucu_final_project.src.params import params
@@ -36,6 +37,29 @@ lock = threading.Lock()
 # Dictionary to maintain state per title
 title_state = {}
 
+# CSV file path
+CSV_FILE_PATH = "wikipedia_edits.csv"
+
+# Delete existing file on restart
+if os.path.exists(CSV_FILE_PATH):
+    os.remove(CSV_FILE_PATH)
+
+# Initialize CSV file with headers
+with open(CSV_FILE_PATH, mode='w', newline='', encoding='utf-8') as file:
+    writer = csv.writer(file)
+    writer.writerow([
+        "title", "timestamp", "bot_ground_truth", "time_interval", "signature",
+        "comment", "edit_size", "bloom_filter_classification", "formatted_time"
+    ])
+
+def write_to_csv(record):
+    """
+    Write a record to the CSV file.
+    """
+    with open(CSV_FILE_PATH, mode='a', newline='', encoding='utf-8') as file:
+        writer = csv.writer(file)
+        writer.writerow(record)
+
 def process_edits(edits):
     global total_edits_acc, bot_edits_acc, human_edits_acc, bloom_filter, title_state, true_positive_acc, false_positive_acc
 
@@ -61,8 +85,8 @@ def process_edits(edits):
         # Generate signature
         signature = generate_signature(row, time_interval)
 
-        is_bot = row['bot']
-        if is_bot:
+        is_bot_ground_truth = row['bot']
+        if is_bot_ground_truth:
             # Add bot signatures to the Bloom Filter
             bloom_filter.add_signature(signature)
             bots_in_batch += 1
@@ -70,11 +94,29 @@ def process_edits(edits):
             humans_in_batch += 1
 
         # Check if the signature is identified as a bot by the Bloom Filter
-        if bloom_filter.is_bot_signature(signature):
-            if is_bot:
+        bloom_filter_classification = bloom_filter.is_bot_signature(signature)
+        if bloom_filter_classification:
+            if is_bot_ground_truth:
                 true_positive += 1
             else:
                 false_positive += 1
+
+        # Calculate edit size if applicable
+        edit_size = ''
+        if 'length' in row and 'new' in row['length'] and 'old' in row['length']:
+            edit_size = str(int(row['length']['new']) - int(row['length']['old']))
+
+        # Extract the comment
+        comment = row.get('comment', '')
+
+        # Convert timestamp to human-readable format
+        formatted_time = datetime.utcfromtimestamp(current_timestamp).strftime('%Y-%m-%d %H:%M:%S')
+
+        # Write the record to CSV
+        write_to_csv([
+            title, current_timestamp, is_bot_ground_truth, time_interval, signature,
+            comment, edit_size, bloom_filter_classification, formatted_time
+        ])
 
     # Update accumulators
     with lock:
