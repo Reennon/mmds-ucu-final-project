@@ -82,17 +82,26 @@ def process_edits(edits):
         # Update state with current timestamp
         title_state[title] = current_timestamp
 
+        # TODO: do inference on ML model here
+        # TODO: step 1 add if flag in params class, to collect data/inference
+        # TODO: step 2 classify based on ML model features whether the edit is from bot
+        # TODO: step 3 add signature based on whether the edit is from bot or not
+        # TODO: step 4 classify whether the user is a bot using bloom filter (updated from ml model)
+        # TODO: step 5 add to csv columns [is bot (ground truth), predicted bot (ML), predicted bot (Bloom Filter+ML)
+        # TODO: step 6 compare bloom filter+ML with ML MODEL
+        # TODO: step 7 update readme
         # Generate signature
         signature = generate_signature(row, time_interval)
-
+        # TODO: here
         is_bot_ground_truth = row['bot']
-        if is_bot_ground_truth:
+        if is_bot_ground_truth: # FIXME: USE ML PREDICTION
             # Add bot signatures to the Bloom Filter
             bloom_filter.add_signature(signature)
             bots_in_batch += 1
         else:
             humans_in_batch += 1
 
+        # TODO: try to add it before adding signature
         # Check if the signature is identified as a bot by the Bloom Filter
         bloom_filter_classification = bloom_filter.is_bot_signature(signature)
         if bloom_filter_classification:
