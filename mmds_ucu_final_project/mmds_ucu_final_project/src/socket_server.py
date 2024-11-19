@@ -1,7 +1,7 @@
 import socket
 import requests
 
-from mmds_ucu_final_project.src.params import params
+from params import params
 
 
 def stream_wikipedia_edits(port):

@@ -5,10 +5,13 @@ from pyspark.streaming import StreamingContext
 import threading
 import time
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 
-from mmds_ucu_final_project.src.bloom_filter import BotBloomFilter, generate_signature
-from mmds_ucu_final_project.src.params import params
+from bloom_filter import BotBloomFilter
+from params import params
+from utils import generate_signature, prepare_row_for_predictions
+import lightgbm as lgb
+
 
 conf = SparkConf()
 conf.setAppName("WikipediaEditStream")
@@ -25,11 +28,6 @@ human_edits_acc = sc.accumulator(0)
 false_positive_acc = sc.accumulator(0)
 true_positive_acc = sc.accumulator(0)
 
-# Initialize the Bloom Filter
-bloom_filter = BotBloomFilter(
-    expected_elements=params.min_num_edits + 100,
-    false_positive_rate=params.bloom_filter_error_rate
-)
 
 # Define a lock for thread-safe operations
 lock = threading.Lock()
@@ -38,29 +36,51 @@ lock = threading.Lock()
 title_state = {}
 
 # CSV file path
-CSV_FILE_PATH = "wikipedia_edits.csv"
+TRAIN_CSV_FILE_PATH = "../data/wikipedia_edits.csv"
+FILTERD_CSV_FILE_PATH = "../data/online_filtered_wikipedia_edits.csv"
+ARTIFACT_PATH = "../../../artifacts"
+
+
+inference_mode = os.getenv('INFERENCE', 'False')  # Default to 'False' if not set
+socket_port = os.getenv('PORT', '5000')  # Default to 'False' if not set
 
 # Delete existing file on restart
-if os.path.exists(CSV_FILE_PATH):
-    os.remove(CSV_FILE_PATH)
+if os.path.exists(TRAIN_CSV_FILE_PATH):
+    os.remove(TRAIN_CSV_FILE_PATH)
+
+if os.path.exists(FILTERD_CSV_FILE_PATH):
+    os.remove(FILTERD_CSV_FILE_PATH)
+
 
 # Initialize CSV file with headers
-with open(CSV_FILE_PATH, mode='w', newline='', encoding='utf-8') as file:
+
+# Writing function for training Light GBM and Bloom Filter
+with open(TRAIN_CSV_FILE_PATH, mode='w', newline='', encoding='utf-8') as file:
     writer = csv.writer(file)
     writer.writerow([
-        "title", "timestamp", "bot_ground_truth", "time_interval", "signature",
-        "comment", "edit_size", "bloom_filter_classification", "formatted_time"
+        "title", "username", "timestamp", "bot_ground_truth", "time_interval",
+        "comment", "edit_size", "formatted_time"
     ])
 
-def write_to_csv(record):
+
+# Gathering only the filtered edits after checking by bloom filter and LightGBM
+with open(FILTERD_CSV_FILE_PATH, mode='w', newline='', encoding='utf-8') as file:
+    writer = csv.writer(file)
+    writer.writerow([
+        "title", "timestamp", "is_bot_predicted", "time_interval",
+        "comment", "edit_size","formatted_time"
+    ])
+
+
+def write_to_csv(path, record):
     """
     Write a record to the CSV file.
     """
-    with open(CSV_FILE_PATH, mode='a', newline='', encoding='utf-8') as file:
+    with open(path, mode='a', newline='', encoding='utf-8') as file:
         writer = csv.writer(file)
         writer.writerow(record)
 
-def process_edits(edits):
+def process_edits(edits, inference=True):
     global total_edits_acc, bot_edits_acc, human_edits_acc, bloom_filter, title_state, true_positive_acc, false_positive_acc
 
     total_edits = len(edits)
@@ -82,41 +102,82 @@ def process_edits(edits):
         # Update state with current timestamp
         title_state[title] = current_timestamp
 
-        # Generate signature
-        signature = generate_signature(row, time_interval)
 
-        is_bot_ground_truth = row['bot']
-        if is_bot_ground_truth:
-            # Add bot signatures to the Bloom Filter
-            bloom_filter.add_signature(signature)
-            bots_in_batch += 1
-        else:
-            humans_in_batch += 1
+        if inference:
+            # inference: loading existing bloom filter and model
+            model = lgb.Booster(model_file=f"{ARTIFACT_PATH}/bot_classifier.bin")
+            bloom_filter = BotBloomFilter()
+            bloom_filter.load_from_json(file_path=f"{ARTIFACT_PATH}/bloom_filter_params.json")
 
-        # Check if the signature is identified as a bot by the Bloom Filter
-        bloom_filter_classification = bloom_filter.is_bot_signature(signature)
-        if bloom_filter_classification:
-            if is_bot_ground_truth:
-                true_positive += 1
+            # Applying bloom filter to filter out bots
+            username = row.get('user', '')
+            print(username)
+            is_bot = bloom_filter.is_bot_signature(username)
+
+            # if bloom filter predicted bot, we just skipping this edit
+            if is_bot:
+                print("Bloom filter DETECTED bot, drop this edit, call to police!")
+                break
+
+
+            # if bloom filter haven't predicted the bot, then we apply a model
+            # Prepare row for prediction
+            test_row = prepare_row_for_predictions(row)
+            is_bot_predicted = model.predict(test_row)
+
+            # If we predicted the bot, extent the bloom filter, WE can do a lot of false positives
+            if is_bot_predicted > 0.2:
+                print('we are predicted bot, lightGbm is the best, data sqcience forever!')
+                bloom_filter.add(username)
+                bots_in_batch += 1
             else:
-                false_positive += 1
+                humans_in_batch += 1
 
-        # Calculate edit size if applicable
-        edit_size = ''
-        if 'length' in row and 'new' in row['length'] and 'old' in row['length']:
-            edit_size = str(int(row['length']['new']) - int(row['length']['old']))
 
-        # Extract the comment
-        comment = row.get('comment', '')
+            # Calculate edit size if applicable
+            edit_size = ''
+            if 'length' in row and 'new' in row['length'] and 'old' in row['length']:
+                edit_size = str(int(row['length']['new']) - int(row['length']['old']))
 
-        # Convert timestamp to human-readable format
-        formatted_time = datetime.utcfromtimestamp(current_timestamp).strftime('%Y-%m-%d %H:%M:%S')
+            # Extract the comment
+            comment = row.get('comment', '')
 
-        # Write the record to CSV
-        write_to_csv([
-            title, current_timestamp, is_bot_ground_truth, time_interval, signature,
-            comment, edit_size, bloom_filter_classification, formatted_time
-        ])
+            # Convert timestamp to human-readable format
+            formatted_time = datetime.fromtimestamp(current_timestamp, tz=timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
+
+            # Write the record for inference to CSV
+            write_to_csv(FILTERD_CSV_FILE_PATH,[
+                title, current_timestamp, is_bot_predicted, time_interval,
+                comment, edit_size, formatted_time
+            ])
+
+
+        else:
+            # Training: Gathering the dataset for training in jupyter notebook
+            is_bot_ground_truth = row['bot']
+
+            if is_bot_predicted:
+                bots_in_batch += 1
+            else:
+                humans_in_batch += 1
+
+            edit_size = ''
+            if 'length' in row and 'new' in row['length'] and 'old' in row['length']:
+                edit_size = str(int(row['length']['new']) - int(row['length']['old']))
+
+            # Extract the comment
+            comment = row.get('comment', '')
+
+            # extract username, ha ha ha
+            username = row.get('user', '')
+            # Convert timestamp to human-readable format
+            formatted_time = datetime.fromtimestamp(current_timestamp, tz=timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
+
+            # Write the record to CSV
+            write_to_csv(TRAIN_CSV_FILE_PATH, [
+                title, username, current_timestamp, is_bot_ground_truth, time_interval,
+                comment, edit_size, formatted_time
+            ])
 
     # Update accumulators
     with lock:
@@ -155,7 +216,7 @@ def update_state(time, rdd):
                         continue  # Skip invalid JSON
 
                 # Process the edits
-                process_edits(edits)
+                process_edits(edits, inference_mode)
         except Exception as e:
             print(f"Error in update_state: {e}")
 

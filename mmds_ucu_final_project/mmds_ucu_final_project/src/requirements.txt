@@ -1,0 +1,11 @@
+pyspark==3.5.3
+flask
+requests
+mmh3
+pydantic
+pandas
+numpy
+lightgbm==4.5.0
+pybloom-live==4.0.0
+matplotlib==3.9.2
+scikit-learn==1.5.2
