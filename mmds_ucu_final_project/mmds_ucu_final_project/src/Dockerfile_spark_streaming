@@ -1,0 +1,20 @@
+# Use a base image
+FROM python:3.12-slim
+
+# Set the working directory
+WORKDIR /app
+
+# Copy source files
+COPY . /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends apt-utils
+RUN apt-get -y install curl
+RUN apt-get install libgomp1
+
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Expose any port if needed (e.g., if Spark or the streaming service communicates)
+EXPOSE 6000
+
+# Command to run the Spark streaming service
+CMD ["python", "spark_streaming.py"]

@@ -2,7 +2,7 @@
 name = "mmds-ucu-final-project"
 version = "0.1.0"
 description = ""
-authors = ["rkovalch <mrbylba@gmail.com>"]
+authors = ["rkovalch <mrbylba@gmail.com>", "yurii voievidka <urik.voevidka@gmail.com>"]
 readme = "README.md"
 
 [tool.poetry.dependencies]
