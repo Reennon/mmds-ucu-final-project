@@ -202,8 +202,10 @@ def update_state(time, rdd):
     """
     if not rdd.isEmpty():
         try:
-            # Collect data on the driver
-            data = rdd.collect()
+            sampled_rdd = rdd.sample(withReplacement=False, fraction=0.2, seed=42)
+
+            # Collect sampled data on the driver
+            data = sampled_rdd.collect()
             if data:
                 # Process the data on the driver
                 edits = []
